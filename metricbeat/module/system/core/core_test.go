@@ -1,5 +1,4 @@
-// +build !integration
-// +build darwin freebsd linux openbsd
+// +build darwin freebsd linux openbsd windows
 
 package core
 

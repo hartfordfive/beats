@@ -12,7 +12,7 @@ def collect():
     fields_yml = ""
 
     # Iterate over all modules
-    for module in os.listdir(base_dir):
+    for module in sorted(os.listdir(base_dir)):
 
         module_fields = path + "/" + module + "/_meta/fields.yml"
 
@@ -27,7 +27,7 @@ def collect():
 
 
         # Iterate over all metricsets
-        for metricset in os.listdir(base_dir + "/" + module):
+        for metricset in sorted(os.listdir(base_dir + "/" + module)):
 
             metricset_fields = path + "/" + module + "/" + metricset + "/_meta/fields.yml"
 
@@ -43,6 +43,9 @@ def collect():
                         fields_yml += "    " + "    " + line
                     else:
                         fields_yml += line
+
+            # Add newline to make sure indentation is correct
+            fields_yml += "\n"
 
     # output string so it can be concatenated
     print fields_yml

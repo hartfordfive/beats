@@ -1,11 +1,9 @@
-// +build !integration
 // +build darwin freebsd linux openbsd windows
 
 package cpu
 
 import (
 	"testing"
-
 	"time"
 
 	mbtest "github.com/elastic/beats/metricbeat/mb/testing"
@@ -14,7 +12,7 @@ import (
 func TestData(t *testing.T) {
 	f := mbtest.NewEventFetcher(t, getConfig())
 
-	// Do a first fetch to have precentages
+	// Do a first fetch to have percentages
 	f.Fetch()
 	time.Sleep(1 * time.Second)
 

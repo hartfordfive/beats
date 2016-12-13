@@ -15,11 +15,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/elastic/beats/libbeat/beat"
+	lbeat "github.com/elastic/beats/libbeat/beat"
 	"github.com/elastic/beats/libbeat/common"
 	"github.com/elastic/beats/libbeat/common/fmtstr"
+	"github.com/elastic/beats/libbeat/outputs"
 	"github.com/elastic/beats/libbeat/outputs/elasticsearch"
 	"github.com/elastic/beats/libbeat/outputs/outil"
+	"github.com/elastic/beats/libbeat/outputs/transport"
 )
 
 var usage = fmt.Sprintf(`
@@ -27,35 +29,37 @@ Usage: ./import_dashboards [options]
 
 Kibana dashboards are stored in a special index in Elasticsearch together with the searches, visualizations, and indexes that they use.
 
-You can import the dashboards, visualizations, searches, and the index pattern for any Beat:
-  1. from a local directory:
-	./import_dashboards -dir etc/kibana
-  2. from a local zip archive:
-	./import_dashboards -beat metricbeat -file beats-dashboards-%s.zip
-  3. from a zip archive available online:
-	./import_dashboards -beat metricbeat -url http://download.elastic.co/beats/dashboards/beats-dashboards-%s.zip
+To import the official Kibana dashboards for your Beat version into a local Elasticsearch instance, use:
 
-If the archive contains dashboards for multiple Beats, you need to pass the Beat name in -beat option:
-	./import_dashboards -beat metricbeat -url http://download.elastic.co/beats/dashboards/beats-dashboards-%s.zip
+	./import_dashboards
 
-To import only the index-pattern for a single Beat, from the same version use:
-	./import_dashboards -only-index -beat metricbeat
+To import the official Kibana dashboards for your Beat version into a remote Elasticsearch instance with Shield, use:
 
-Options:
-`, beat.GetDefaultVersion(), beat.GetDefaultVersion(), beat.GetDefaultVersion())
+	./import_dashboards -es https://xyz.found.io -user user -pass password
+
+For more details, check https://www.elastic.co/guide/en/beats/libbeat/5.0/import-dashboards.html.
+
+`)
+
+var beat string
 
 type Options struct {
-	KibanaIndex    string
-	ES             string
-	Index          string
-	Dir            string
-	File           string
-	Beat           string
-	Url            string
-	User           string
-	Pass           string
-	OnlyDashboards bool
-	OnlyIndex      bool
+	KibanaIndex          string
+	ES                   string
+	Index                string
+	Dir                  string
+	File                 string
+	Beat                 string
+	URL                  string
+	User                 string
+	Pass                 string
+	Certificate          string
+	CertificateKey       string
+	CertificateAuthority string
+	Insecure             bool // Allow insecure SSL connections.
+	OnlyDashboards       bool
+	OnlyIndex            bool
+	Snapshot             bool
 }
 
 type CommandLine struct {
@@ -68,7 +72,7 @@ type Importer struct {
 	client *elasticsearch.Client
 }
 
-func ParseCommandLine() (*CommandLine, error) {
+func DefineCommandLine() (*CommandLine, error) {
 	var cl CommandLine
 
 	cl.flagSet = flag.NewFlagSet("import", flag.ContinueOnError)
@@ -81,29 +85,44 @@ func ParseCommandLine() (*CommandLine, error) {
 
 	cl.flagSet.StringVar(&cl.opt.KibanaIndex, "k", ".kibana", "Kibana index")
 	cl.flagSet.StringVar(&cl.opt.ES, "es", "http://127.0.0.1:9200", "Elasticsearch URL")
-	cl.flagSet.StringVar(&cl.opt.User, "user", "", "Username to connect to Elasticsearch")
-	cl.flagSet.StringVar(&cl.opt.Pass, "pass", "", "Password to connect to Elasticsearch")
-	cl.flagSet.StringVar(&cl.opt.Index, "i", "", "Overwrites the Elasticsearch index name. For example you can replaces metricbeat-* with custombeat-*")
-	cl.flagSet.StringVar(&cl.opt.Dir, "dir", "", "Directory containing the subdirectories: dashboard, visualization, search, index-pattern. eg. kibana/")
-	cl.flagSet.StringVar(&cl.opt.File, "file", "", "Zip archive file containing the Beats dashboards.")
-	cl.flagSet.StringVar(&cl.opt.Url, "url",
-		fmt.Sprintf("https://download.elastic.co/beats/dashboards/beats-dashboards-%s.zip", beat.GetDefaultVersion()),
+	cl.flagSet.StringVar(&cl.opt.User, "user", "", "Username to connect to Elasticsearch. By default no username is passed.")
+	cl.flagSet.StringVar(&cl.opt.Pass, "pass", "", "Password to connect to Elasticsearch. By default no password is passed.")
+	cl.flagSet.StringVar(&cl.opt.Index, "i", "", "The Elasticsearch index name. This overwrites the index name defined in the dashboards and index pattern. Example: metricbeat-*")
+	cl.flagSet.StringVar(&cl.opt.Dir, "dir", "", "Directory containing the subdirectories: dashboard, visualization, search, index-pattern. Example: etc/kibana/")
+	cl.flagSet.StringVar(&cl.opt.File, "file", "", "Zip archive file containing the Beats dashboards. The archive contains a directory for each Beat.")
+	cl.flagSet.StringVar(&cl.opt.URL, "url",
+		fmt.Sprintf("https://artifacts.elastic.co/downloads/beats/beats-dashboards/beats-dashboards-%s.zip", lbeat.GetDefaultVersion()),
 		"URL to the zip archive containing the Beats dashboards")
-	cl.flagSet.StringVar(&cl.opt.Beat, "beat", "", "Specify the Beat name, in case the archive contains the dashboards for multiple Beats.")
-	cl.flagSet.BoolVar(&cl.opt.OnlyDashboards, "only-dashboards", false, "Import only dashboards together with visualizations and searches. By default imports both, dashboards and the index-pattern.")
+	cl.flagSet.StringVar(&cl.opt.Beat, "beat", beat, "The Beat name that is used to select what dashboards to install from a zip. An empty string selects all.")
+	cl.flagSet.BoolVar(&cl.opt.OnlyDashboards, "only-dashboards", false, "Import only dashboards together with visualizations and searches. By default import both, dashboards and the index-pattern.")
 	cl.flagSet.BoolVar(&cl.opt.OnlyIndex, "only-index", false, "Import only the index-pattern. By default imports both, dashboards and the index pattern.")
+	cl.flagSet.BoolVar(&cl.opt.Snapshot, "snapshot", false, "Import dashboards from snapshot builds.")
+	cl.flagSet.StringVar(&cl.opt.CertificateAuthority, "cacert", "", "Certificate Authority for server verification")
+	cl.flagSet.StringVar(&cl.opt.Certificate, "cert", "", "Certificate for SSL client authentication in PEM format.")
+	cl.flagSet.StringVar(&cl.opt.CertificateKey, "key", "", "Client Certificate Key in PEM format.")
+	cl.flagSet.BoolVar(&cl.opt.Insecure, "insecure", false, `Allows "insecure" SSL connections`)
 
 	return &cl, nil
 }
 
-func (cl *CommandLine) Read() error {
+func (cl *CommandLine) ParseCommandLine() error {
+
+	cl.opt.Beat = beat
 
 	if err := cl.flagSet.Parse(os.Args[1:]); err != nil {
 		return err
 	}
 
-	if cl.opt.Url == "" && cl.opt.File == "" && cl.opt.Dir == "" {
+	if cl.opt.URL == "" && cl.opt.File == "" && cl.opt.Dir == "" {
 		return errors.New("ERROR: Missing input. Please specify one of the options -file, -url or -dir")
+	}
+
+	if cl.opt.Certificate != "" && cl.opt.CertificateKey == "" {
+		return errors.New("ERROR: A certificate key needs to be passed as well by using the -key option.")
+	}
+
+	if cl.opt.CertificateKey != "" && cl.opt.Certificate == "" {
+		return errors.New("ERROR: A certificate needs to be passed as well by using the -cert option.")
 	}
 
 	return nil
@@ -113,13 +132,13 @@ func New() (*Importer, error) {
 	importer := Importer{}
 
 	/* define the command line arguments */
-	cl, err := ParseCommandLine()
+	cl, err := DefineCommandLine()
 	if err != nil {
 		cl.flagSet.Usage()
 		return nil, err
 	}
 	/* parse command line arguments */
-	err = cl.Read()
+	err = cl.ParseCommandLine()
 	if err != nil {
 		return nil, err
 	}
@@ -132,11 +151,35 @@ func New() (*Importer, error) {
 	}
 	indexSel := outil.MakeSelector(outil.FmtSelectorExpr(fmtstr, ""))
 
+	var tlsConfig outputs.TLSConfig
+	var tls *transport.TLSConfig
+
+	if cl.opt.Insecure {
+		tlsConfig.VerificationMode = transport.VerifyNone
+	}
+
+	if len(cl.opt.Certificate) > 0 && len(cl.opt.CertificateKey) > 0 {
+		tlsConfig.Certificate = outputs.CertificateConfig{
+			Certificate: cl.opt.Certificate,
+			Key:         cl.opt.CertificateKey,
+		}
+	}
+
+	if len(cl.opt.CertificateAuthority) > 0 {
+		tlsConfig.CAs = []string{cl.opt.CertificateAuthority}
+	}
+
+	tls, err = outputs.LoadTLSConfig(&tlsConfig)
+	if err != nil {
+		return nil, fmt.Errorf("fail to load the SSL certificate: %s", err)
+	}
+
 	/* connect to Elasticsearch */
 	client, err := elasticsearch.NewClient(
 		elasticsearch.ClientSettings{
 			URL:      cl.opt.ES,
 			Index:    indexSel,
+			TLS:      tls,
 			Username: cl.opt.User,
 			Password: cl.opt.Pass,
 			Timeout:  60 * time.Second,
@@ -173,7 +216,7 @@ func (imp Importer) CreateIndex() error {
 	return nil
 }
 
-func (imp Importer) ImportJsonFile(fileType string, file string) error {
+func (imp Importer) ImportJSONFile(fileType string, file string) error {
 
 	path := "/" + imp.cl.opt.KibanaIndex + "/" + fileType
 
@@ -185,7 +228,7 @@ func (imp Importer) ImportJsonFile(fileType string, file string) error {
 	json.Unmarshal(reader, &jsonContent)
 	fileBase := strings.TrimSuffix(filepath.Base(file), filepath.Ext(file))
 
-	err = imp.client.LoadJson(path+"/"+fileBase, jsonContent)
+	err = imp.client.LoadJSON(path+"/"+fileBase, jsonContent)
 	if err != nil {
 		return fmt.Errorf("fail to load %s under %s/%s: %s", file, path, fileBase, err)
 	}
@@ -198,7 +241,7 @@ func (imp Importer) ImportDashboard(file string) error {
 	fmt.Println("Import dashboard ", file)
 
 	/* load dashboard */
-	err := imp.ImportJsonFile("dashboard", file)
+	err := imp.ImportJSONFile("dashboard", file)
 	if err != nil {
 		return err
 	}
@@ -229,25 +272,25 @@ func (imp Importer) importPanelsFromDashboard(file string) (err error) {
 		PanelsJSON string `json:"panelsJSON"`
 	}
 	type panel struct {
-		Id   string `json:"id"`
+		ID   string `json:"id"`
 		Type string `json:"type"`
 	}
 
-	var json_content record
-	json.Unmarshal(reader, &json_content)
+	var jsonContent record
+	json.Unmarshal(reader, &jsonContent)
 
 	var widgets []panel
-	json.Unmarshal([]byte(json_content.PanelsJSON), &widgets)
+	json.Unmarshal([]byte(jsonContent.PanelsJSON), &widgets)
 
 	for _, widget := range widgets {
 
 		if widget.Type == "visualization" {
-			err = imp.ImportVisualization(path.Join(mainDir, "visualization", widget.Id+".json"))
+			err = imp.ImportVisualization(path.Join(mainDir, "visualization", widget.ID+".json"))
 			if err != nil {
 				return err
 			}
 		} else if widget.Type == "search" {
-			err = imp.ImportSearch(path.Join(mainDir, "search", widget.Id+".json"))
+			err = imp.ImportSearch(path.Join(mainDir, "search", widget.ID+".json"))
 			if err != nil {
 				return err
 			}
@@ -262,7 +305,7 @@ func (imp Importer) importPanelsFromDashboard(file string) (err error) {
 func (imp Importer) importSearchFromVisualization(file string) error {
 	type record struct {
 		Title         string `json:"title"`
-		SavedSearchId string `json:"savedSearchId"`
+		SavedSearchID string `json:"savedSearchId"`
 	}
 
 	reader, err := ioutil.ReadFile(file)
@@ -270,9 +313,9 @@ func (imp Importer) importSearchFromVisualization(file string) error {
 		return nil
 	}
 
-	var json_content record
-	json.Unmarshal(reader, &json_content)
-	id := json_content.SavedSearchId
+	var jsonContent record
+	json.Unmarshal(reader, &jsonContent)
+	id := jsonContent.SavedSearchID
 	if len(id) == 0 {
 		// no search used
 		return nil
@@ -298,7 +341,7 @@ func (imp Importer) importSearchFromVisualization(file string) error {
 func (imp Importer) ImportVisualization(file string) error {
 
 	fmt.Println("Import vizualization ", file)
-	if err := imp.ImportJsonFile("visualization", file); err != nil {
+	if err := imp.ImportJSONFile("visualization", file); err != nil {
 		return err
 	}
 
@@ -351,7 +394,7 @@ func (imp Importer) ImportSearch(file string) error {
 	path := "/" + imp.cl.opt.KibanaIndex + "/search/" + searchName
 	fmt.Println("Import search ", file)
 
-	if err = imp.client.LoadJson(path, searchContent); err != nil {
+	if err = imp.client.LoadJSON(path, searchContent); err != nil {
 		return err
 	}
 
@@ -381,7 +424,7 @@ func (imp Importer) ImportIndex(file string) error {
 	path := "/" + imp.cl.opt.KibanaIndex + "/index-pattern/" + indexName
 	fmt.Printf("Import index to %s from %s\n", path, file)
 
-	if err = imp.client.LoadJson(path, indexContent); err != nil {
+	if err = imp.client.LoadJSON(path, indexContent); err != nil {
 		return err
 	}
 	return nil
@@ -488,6 +531,22 @@ func getMainDir(target string) (string, error) {
 	return filepath.Join(target, dirs[0]), nil
 }
 
+func getDirectories(target string) ([]string, error) {
+
+	files, err := ioutil.ReadDir(target)
+	if err != nil {
+		return nil, err
+	}
+	var dirs []string
+
+	for _, file := range files {
+		if file.IsDir() {
+			dirs = append(dirs, filepath.Join(target, file.Name()))
+		}
+	}
+	return dirs, nil
+}
+
 func downloadFile(url string, target string) (string, error) {
 
 	fileName := filepath.Base(url)
@@ -535,11 +594,17 @@ func (imp Importer) ImportArchive() error {
 	fmt.Println("Create temporary directory", target)
 	if imp.cl.opt.File != "" {
 		archive = imp.cl.opt.File
-	} else if imp.cl.opt.Url != "" {
-		// it's an URL
-		archive, err = downloadFile(imp.cl.opt.Url, target)
+	} else if imp.cl.opt.Snapshot {
+		// In case snapshot is set, snapshot version is fetched
+		url := fmt.Sprintf("https://beats-nightlies.s3.amazonaws.com/dashboards/beats-dashboards-%s-SNAPSHOT.zip", lbeat.GetDefaultVersion())
+		archive, err = downloadFile(url, target)
 		if err != nil {
-			return fmt.Errorf("fail to download file: %s", imp.cl.opt.Url)
+			return fmt.Errorf("fail to download snapshot file: %s", url)
+		}
+	} else if imp.cl.opt.URL != "" {
+		archive, err = downloadFile(imp.cl.opt.URL, target)
+		if err != nil {
+			return fmt.Errorf("fail to download file: %s", imp.cl.opt.URL)
 		}
 	} else {
 		return errors.New("No archive file or URL is set. Please use -file or -url option.")
@@ -549,16 +614,28 @@ func (imp Importer) ImportArchive() error {
 	if err != nil {
 		return fmt.Errorf("fail to unzip the archive: %s", archive)
 	}
-	dir, err := getMainDir(target)
+	dirs, err := getDirectories(target)
+	if err != nil {
+		return err
+	}
+	if len(dirs) != 1 {
+		return fmt.Errorf("too many directories under %s", target)
+	}
+
+	dirs, err = getDirectories(dirs[0])
 	if err != nil {
 		return err
 	}
 
-	err = imp.ImportKibana(path.Join(dir, imp.cl.opt.Beat))
-	if err != nil {
-		return err
+	for _, dir := range dirs {
+		fmt.Println(dir)
+		if imp.cl.opt.Beat == "" || filepath.Base(dir) == imp.cl.opt.Beat {
+			err = imp.ImportKibana(dir)
+			if err != nil {
+				return err
+			}
+		}
 	}
-
 	return nil
 }
 
@@ -602,7 +679,7 @@ func main() {
 			fmt.Println(err)
 		}
 	} else {
-		if importer.cl.opt.Url != "" || importer.cl.opt.File != "" {
+		if importer.cl.opt.URL != "" || importer.cl.opt.File != "" {
 			if err = importer.ImportArchive(); err != nil {
 				fmt.Println(err)
 			}

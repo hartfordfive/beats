@@ -2,7 +2,7 @@
 
 """
 This script generates the ES template file (packetbeat.template.json) from
-the etc/fields.yml file.
+the _meta/fields.yml file.
 
 Example usage:
 
@@ -12,9 +12,10 @@ Example usage:
 import yaml
 import json
 import argparse
+import os
 
 
-def fields_to_es_template(args, input, output, index):
+def fields_to_es_template(args, input, output, index, version):
     """
     Reads the YAML file from input and generates the JSON for
     the ES template in output. input and output are both file
@@ -52,7 +53,10 @@ def fields_to_es_template(args, input, output, index):
                 "_all": {
                     "norms": False
                 },
-                "properties": {}
+                "properties": {},
+                "_meta": {
+                    "version": version,
+                }
             }
         }
     }
@@ -65,6 +69,30 @@ def fields_to_es_template(args, input, output, index):
 
     properties = {}
     dynamic_templates = []
+
+    # Make strings keywords by default
+    if args.es2x:
+        dynamic_templates.append({
+            "strings_as_keyword": {
+                "mapping": {
+                    "type": "string",
+                    "index": "not_analyzed",
+                    "ignore_above": 1024
+                },
+                "match_mapping_type": "string",
+            }
+        })
+    else:
+        dynamic_templates.append({
+            "strings_as_keyword": {
+                "mapping": {
+                    "type": "keyword",
+                    "ignore_above": 1024
+                },
+                "match_mapping_type": "string",
+            }
+        })
+
     for section in docs["fields"]:
         prop, dynamic = fill_section_properties(args, section,
                                                 defaults, "")
@@ -197,9 +225,9 @@ def fill_field_properties(args, field, defaults, path):
                 field.get("scaling_factor", 1000)
 
     elif field["type"] in ["dict", "list"]:
-        if field.get("dict-type") == "keyword":
+        if field.get("dict-type") == "text":
             # add a dynamic template to set all members of
-            # the dict as keywords
+            # the dict as text
             if len(path) > 0:
                 name = path + "." + field["name"]
             else:
@@ -210,8 +238,7 @@ def fill_field_properties(args, field, defaults, path):
                     name: {
                         "mapping": {
                             "type": "string",
-                            "index": "not_analyzed",
-                            "ignore_above": 1024
+                            "index": "analyzed",
                         },
                         "match_mapping_type": "string",
                         "path_match": name + ".*"
@@ -221,8 +248,7 @@ def fill_field_properties(args, field, defaults, path):
                 dynamic_templates.append({
                     name: {
                         "mapping": {
-                            "type": "keyword",
-                            "ignore_above": 1024
+                            "type": "text",
                         },
                         "match_mapping_type": "string",
                         "path_match": name + ".*"
@@ -281,12 +307,21 @@ if __name__ == "__main__":
         target += "-es2x"
     target += ".json"
 
-    with open(args.path + "/etc/fields.yml", 'r') as f:
+    fields_yml = args.path + "/_meta/fields.generated.yml"
+
+    # Not all beats have a fields.generated.yml. Fall back to fields.yml
+    if not os.path.isfile(fields_yml):
+        fields_yml = args.path + "/_meta/fields.yml"
+
+    with open(fields_yml, 'r') as f:
         fields = f.read()
 
         # Prepend beat fields from libbeat
-        with open(args.es_beats + "/libbeat/_meta/fields.yml") as f:
+        with open(args.es_beats + "/libbeat/_meta/fields.generated.yml") as f:
             fields = f.read() + fields
 
+        with open(args.es_beats + "/dev-tools/packer/version.yml") as file:
+            version_data = yaml.load(file)
+
         with open(target, 'w') as output:
-            fields_to_es_template(args, fields, output, args.beatname + "-*")
+            fields_to_es_template(args, fields, output, args.beatname + "-*", version_data['version'])

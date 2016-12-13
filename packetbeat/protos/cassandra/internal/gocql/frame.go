@@ -310,8 +310,8 @@ func (f *Framer) parseErrorFrame() (data map[string]interface{}) {
 		detail["table"] = table
 
 	case errUnprepared:
-		stmtId := decoder.ReadShortBytes()
-		detail["stmt_id"] = stmtId
+		stmtID := decoder.ReadShortBytes()
+		detail["stmt_id"] = stmtID
 
 	case errReadFailure:
 		detail["read_consistency"] = decoder.ReadConsistency().String()
@@ -443,7 +443,14 @@ func (f *Framer) parseResultPrepared() map[string]interface{} {
 
 	result := make(map[string]interface{})
 
-	result["prepared_id"] = string((f.decoder).ReadShortBytes())
+	uuid, err := UUIDFromBytes((f.decoder).ReadShortBytes())
+
+	if err != nil {
+		logp.Err("Error in parsing UUID")
+	}
+
+	result["prepared_id"] = uuid.String()
+
 	result["req_meta"] = f.parseResultMetadata(true)
 
 	if f.proto < protoVersion2 {

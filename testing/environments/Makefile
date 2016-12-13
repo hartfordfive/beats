@@ -8,7 +8,12 @@ start:
 
 stop:
 	${BASE_COMMAND} stop
-	${BASE_COMMAND} rm -f
+	${BASE_COMMAND} rm
+
+
+up:
+	${BASE_COMMAND} build
+	${BASE_COMMAND} up
 
 # Be careful using this command, as it will remove all containers and volumes of your docker-machine
 clean:
