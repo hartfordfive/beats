@@ -160,7 +160,7 @@ func newTestElasticsearchOutput(t *testing.T, test string) *testOutputer {
 		"template.enabled": false,
 	})
 
-	output, err := plugin("libbeat", config, 10)
+	output, err := plugin(common.BeatInfo{Beat: "libbeat"}, config)
 	if err != nil {
 		t.Fatalf("init elasticsearch output plugin failed: %v", err)
 	}
@@ -266,7 +266,6 @@ func testSendMessageViaLogstash(t *testing.T, name string, tls bool) {
 	event := outputs.Data{Event: common.MapStr{
 		"@timestamp": common.Time(time.Now()),
 		"host":       "test-host",
-		"type":       "log",
 		"message":    "hello world",
 	}}
 	ls.PublishEvent(nil, testOptions, event)

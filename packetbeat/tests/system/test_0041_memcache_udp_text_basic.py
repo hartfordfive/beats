@@ -11,12 +11,12 @@ from packetbeat import BaseTest
 
 
 class Test(BaseTest):
+
     def _run(self, pcap):
         self.render_config_template(
             memcache_udp_transaction_timeout=10
         )
         self.run_packetbeat(pcap=pcap,
-                            extra_args=['-waitstop', '1'],
                             debug_selectors=["memcache", "udp", "publish"])
         objs = self.read_output()
         self.assert_common(objs)

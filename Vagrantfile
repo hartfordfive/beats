@@ -9,7 +9,7 @@
 # This box is used as a Windows development and testing environment for Beats.
 #
 # Usage and Features:
-#   - Two users exist: Administartor and Vagrant. Both have the password: vagrant
+#   - Two users exist: Administrator and Vagrant. Both have the password: vagrant
 #   - Use 'vagrant ssh' to open a Windows command prompt.
 #   - Use 'vagrant rdp' to open a Windows Remote Deskop session. Mac users must
 #     install the Microsoft Remote Desktop Client from the App Store.
@@ -92,6 +92,7 @@ Vagrant.configure(2) do |config|
     config.vm.synced_folder ".", "/vagrant", id: "vagrant-root", :nfs => true, disabled: true
     #config.vm.network "private_network", ip: "192.168.135.18"
 
+    freebsd.vm.hostname = "beats-tester"
     freebsd.vm.provision "shell", inline: $unixProvision, privileged: false
   end
 

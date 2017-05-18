@@ -1,7 +1,7 @@
 package config
 
 import (
-	"errors"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -15,17 +15,19 @@ import (
 
 // Defaults for config variables which are not set
 const (
-	DefaultInputType = "log"
+	DefaultType = "log"
 )
 
 type Config struct {
-	Prospectors     []*common.Config `config:"prospectors"`
-	SpoolSize       uint64           `config:"spool_size" validate:"min=1"`
-	PublishAsync    bool             `config:"publish_async"`
-	IdleTimeout     time.Duration    `config:"idle_timeout" validate:"nonzero,min=0s"`
-	RegistryFile    string           `config:"registry_file"`
-	ConfigDir       string           `config:"config_dir"`
-	ShutdownTimeout time.Duration    `config:"shutdown_timeout"`
+	Prospectors      []*common.Config `config:"prospectors"`
+	SpoolSize        uint64           `config:"spool_size" validate:"min=1"`
+	PublishAsync     bool             `config:"publish_async"`
+	IdleTimeout      time.Duration    `config:"idle_timeout" validate:"nonzero,min=0s"`
+	RegistryFile     string           `config:"registry_file"`
+	ConfigDir        string           `config:"config_dir"`
+	ShutdownTimeout  time.Duration    `config:"shutdown_timeout"`
+	Modules          []*common.Config `config:"modules"`
+	ConfigProspector *common.Config   `config:"config.prospectors"`
 }
 
 var (
@@ -37,15 +39,16 @@ var (
 	}
 )
 
+// Contains available prospector types
 const (
-	LogInputType   = "log"
-	StdinInputType = "stdin"
+	LogType   = "log"
+	StdinType = "stdin"
 )
 
 // List of valid input types
-var ValidInputType = map[string]struct{}{
-	StdinInputType: {},
-	LogInputType:   {},
+var ValidType = map[string]struct{}{
+	StdinType: {},
+	LogType:   {},
 }
 
 // getConfigFiles returns list of config files.
@@ -88,7 +91,10 @@ func mergeConfigFiles(configFiles []string, config *Config) error {
 		tmpConfig := struct {
 			Filebeat Config
 		}{}
-		cfgfile.Read(&tmpConfig, file)
+		err := cfgfile.Read(&tmpConfig, file)
+		if err != nil {
+			return fmt.Errorf("Failed to read %s: %s", file, err)
+		}
 
 		config.Prospectors = append(config.Prospectors, tmpConfig.Filebeat.Prospectors...)
 	}
@@ -122,12 +128,6 @@ func (config *Config) FetchConfigs() error {
 	err = mergeConfigFiles(configFiles, config)
 	if err != nil {
 		log.Fatal("Error merging config files: ", err)
-		return err
-	}
-
-	if len(config.Prospectors) == 0 {
-		err := errors.New("No paths given. What files do you want me to watch?")
-		log.Fatalf("%v", err)
 		return err
 	}
 

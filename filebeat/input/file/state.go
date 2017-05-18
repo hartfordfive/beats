@@ -10,17 +10,18 @@ import (
 
 // State is used to communicate the reading state of a file
 type State struct {
-	Source      string      `json:"source"`
-	Offset      int64       `json:"offset"`
-	Finished    bool        `json:"-"` // harvester state
-	Fileinfo    os.FileInfo `json:"-"` // the file info
-	FileStateOS StateOS
+	Finished    bool          `json:"-"` // harvester state
+	Fileinfo    os.FileInfo   `json:"-"` // the file info
+	Source      string        `json:"source"`
+	Offset      int64         `json:"offset"`
 	Timestamp   time.Time     `json:"timestamp"`
 	TTL         time.Duration `json:"ttl"`
+	Type        string        `json:"type"`
+	FileStateOS StateOS
 }
 
 // NewState creates a new file state
-func NewState(fileInfo os.FileInfo, path string) State {
+func NewState(fileInfo os.FileInfo, path string, t string) State {
 	return State{
 		Fileinfo:    fileInfo,
 		Source:      path,
@@ -28,6 +29,7 @@ func NewState(fileInfo os.FileInfo, path string) State {
 		FileStateOS: GetOSState(fileInfo),
 		Timestamp:   time.Now(),
 		TTL:         -1, // By default, state does have an infinite ttl
+		Type:        t,
 	}
 }
 
@@ -39,7 +41,7 @@ func (s *State) IsEmpty() bool {
 // States handles list of FileState
 type States struct {
 	states []State
-	mutex  sync.Mutex
+	sync.RWMutex
 }
 
 func NewStates() *States {
@@ -50,8 +52,8 @@ func NewStates() *States {
 
 // Update updates a state. If previous state didn't exist, new one is created
 func (s *States) Update(newState State) {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
+	s.Lock()
+	defer s.Unlock()
 
 	index, _ := s.findPrevious(newState)
 	newState.Timestamp = time.Now()
@@ -66,9 +68,8 @@ func (s *States) Update(newState State) {
 }
 
 func (s *States) FindPrevious(newState State) State {
-	// TODO: This currently blocks writing updates every time state is fetched. Should be improved for performance
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
+	s.RLock()
+	defer s.RUnlock()
 	_, state := s.findPrevious(newState)
 	return state
 }
@@ -92,8 +93,8 @@ func (s *States) findPrevious(newState State) (int, State) {
 // The number of states that were cleaned up is returned
 func (s *States) Cleanup() int {
 
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
+	s.Lock()
+	defer s.Unlock()
 
 	statesBefore := len(s.states)
 
@@ -122,16 +123,16 @@ func (s *States) Cleanup() int {
 
 // Count returns number of states
 func (s *States) Count() int {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
+	s.RLock()
+	defer s.RUnlock()
 
 	return len(s.states)
 }
 
 // Returns a copy of the file states
 func (s *States) GetStates() []State {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
+	s.RLock()
+	defer s.RUnlock()
 
 	newStates := make([]State, len(s.states))
 	copy(newStates, s.states)
@@ -141,8 +142,8 @@ func (s *States) GetStates() []State {
 
 // SetStates overwrites all internal states with the given states array
 func (s *States) SetStates(states []State) {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
+	s.Lock()
+	defer s.Unlock()
 	s.states = states
 }
 

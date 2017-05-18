@@ -3,8 +3,9 @@ package reader
 import (
 	"errors"
 	"fmt"
-	"regexp"
 	"time"
+
+	"github.com/elastic/beats/libbeat/common/match"
 )
 
 // MultiLine reader combining multiple line events into one multi-line event.
@@ -19,16 +20,17 @@ import (
 // Errors will force the multiline reader to return the currently active
 // multiline event first and finally return the actual error on next call to Next.
 type Multiline struct {
-	reader    Reader
-	pred      matcher
-	maxBytes  int // bytes stored in content
-	maxLines  int
-	separator []byte
-	last      []byte
-	numLines  int
-	err       error // last seen error
-	state     func(*Multiline) (Message, error)
-	message   Message
+	reader       Reader
+	pred         matcher
+	flushMatcher *match.Matcher
+	maxBytes     int // bytes stored in content
+	maxLines     int
+	separator    []byte
+	last         []byte
+	numLines     int
+	err          error // last seen error
+	state        func(*Multiline) (Message, error)
+	message      Message
 }
 
 const (
@@ -55,7 +57,7 @@ func NewMultiline(
 	maxBytes int,
 	config *MultilineConfig,
 ) (*Multiline, error) {
-	types := map[string]func(*regexp.Regexp) (matcher, error){
+	types := map[string]func(match.Matcher) (matcher, error){
 		"before": beforeMatcher,
 		"after":  afterMatcher,
 	}
@@ -69,6 +71,8 @@ func NewMultiline(
 	if err != nil {
 		return nil, err
 	}
+
+	flushMatcher := config.FlushPattern
 
 	if config.Negate {
 		matcher = negatedMatcher(matcher)
@@ -92,13 +96,14 @@ func NewMultiline(
 	}
 
 	mlr := &Multiline{
-		reader:    reader,
-		pred:      matcher,
-		state:     (*Multiline).readFirst,
-		maxBytes:  maxBytes,
-		maxLines:  maxLines,
-		separator: []byte(separator),
-		message:   Message{},
+		reader:       reader,
+		pred:         matcher,
+		flushMatcher: flushMatcher,
+		state:        (*Multiline).readFirst,
+		maxBytes:     maxBytes,
+		maxLines:     maxLines,
+		separator:    []byte(separator),
+		message:      Message{},
 	}
 	return mlr, nil
 }
@@ -183,6 +188,20 @@ func (mlr *Multiline) readNext() (Message, error) {
 			msg := mlr.finalize()
 			mlr.load(message)
 			return msg, nil
+		}
+
+		// handle case when endPattern is reached
+		if mlr.flushMatcher != nil {
+			endPatternReached := (mlr.flushMatcher.Match(message.Content))
+
+			if endPatternReached == true {
+				// return collected multiline event and
+				// empty buffer for new multiline event
+				mlr.addLine(message)
+				msg := mlr.finalize()
+				mlr.resetState()
+				return msg, nil
+			}
 		}
 
 		// if predicate does not match current multiline -> return multiline event
@@ -280,14 +299,14 @@ func (mlr *Multiline) setState(next func(mlr *Multiline) (Message, error)) {
 
 // matchers
 
-func afterMatcher(regex *regexp.Regexp) (matcher, error) {
-	return genPatternMatcher(regex, func(last, current []byte) []byte {
+func afterMatcher(pat match.Matcher) (matcher, error) {
+	return genPatternMatcher(pat, func(last, current []byte) []byte {
 		return current
 	})
 }
 
-func beforeMatcher(regex *regexp.Regexp) (matcher, error) {
-	return genPatternMatcher(regex, func(last, current []byte) []byte {
+func beforeMatcher(pat match.Matcher) (matcher, error) {
+	return genPatternMatcher(pat, func(last, current []byte) []byte {
 		return last
 	})
 }
@@ -299,12 +318,12 @@ func negatedMatcher(m matcher) matcher {
 }
 
 func genPatternMatcher(
-	regex *regexp.Regexp,
+	pat match.Matcher,
 	sel func(last, current []byte) []byte,
 ) (matcher, error) {
 	matcher := func(last, current []byte) bool {
 		line := sel(last, current)
-		return regex.Match(line)
+		return pat.Match(line)
 	}
 	return matcher, nil
 }
